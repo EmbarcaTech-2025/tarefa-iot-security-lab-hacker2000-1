@@ -1,97 +1,87 @@
-#include "lwip/apps/mqtt.h"       // Biblioteca MQTT do lwIP
-#include "include/mqtt_comm.h"    // Header file com as declarações locais
-// Base: https://github.com/BitDogLab/BitDogLab-C/blob/main/wifi_button_and_led/lwipopts.h
-#include "lwipopts.h"             // Configurações customizadas do lwIP
+#include "lwip/apps/mqtt.h"
+#include "include/mqtt_comm.h"
+#include "lwipopts.h"
+#include <stdio.h>
 
-/* Variável global estática para armazenar a instância do cliente MQTT
- * 'static' limita o escopo deste arquivo */
-static mqtt_client_t *client;
+// Variáveis globais estáticas para o módulo
+static mqtt_client_t *mqtt_client_instance;
+static on_connect_cb_t on_connect_callback;
 
-/* Callback de conexão MQTT - chamado quando o status da conexão muda
- * Parâmetros:
- *   - client: instância do cliente MQTT
- *   - arg: argumento opcional (não usado aqui)
- *   - status: resultado da tentativa de conexão */
+// Callback interno de conexão MQTT
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status) {
+    LWIP_UNUSED_ARG(arg);
     if (status == MQTT_CONNECT_ACCEPTED) {
         printf("Conectado ao broker MQTT com sucesso!\n");
+        if (on_connect_callback) {
+            on_connect_callback(client); // Chama o callback de sucesso (para fazer o subscribe)
+        }
     } else {
         printf("Falha ao conectar ao broker, código: %d\n", status);
     }
 }
 
-/* Função para configurar e iniciar a conexão MQTT
- * Parâmetros:
- *   - client_id: identificador único para este cliente
- *   - broker_ip: endereço IP do broker como string (ex: "192.168.1.1")
- *   - user: nome de usuário para autenticação (pode ser NULL)
- *   - pass: senha para autenticação (pode ser NULL) */
-void mqtt_setup(const char *client_id, const char *broker_ip, const char *user, const char *pass) {
-    ip_addr_t broker_addr;  // Estrutura para armazenar o IP do broker
+// Função para configurar e iniciar a conexão MQTT
+mqtt_client_t* mqtt_setup_and_get_client(const char *client_id, const char *broker_ip, const char *user, const char *pass, on_connect_cb_t cb) {
+    ip_addr_t broker_addr;
     
-    // Converte o IP de string para formato numérico
     if (!ip4addr_aton(broker_ip, &broker_addr)) {
-        printf("Erro no IP\n");
-        return;
+        printf("Erro ao converter o IP do broker.\n");
+        return NULL;
     }
 
-    // Cria uma nova instância do cliente MQTT
-    client = mqtt_client_new();
-    if (client == NULL) {
-        printf("Falha ao criar o cliente MQTT\n");
-        return;
+    mqtt_client_instance = mqtt_client_new();
+    if (mqtt_client_instance == NULL) {
+        printf("Falha ao criar o cliente MQTT.\n");
+        return NULL;
     }
+    
+    on_connect_callback = cb; // Armazena o callback para usar na conexão
 
-    // Configura as informações de conexão do cliente
     struct mqtt_connect_client_info_t ci = {
-        .client_id = client_id,  // ID do cliente
-        .client_user = user,     // Usuário (opcional)
-        .client_pass = pass      // Senha (opcional)
+        .client_id = client_id,
+        .client_user = user,
+        .client_pass = pass,
+        .keep_alive = 60 // Keep alive em segundos
     };
 
-    // Inicia a conexão com o broker
-    // Parâmetros:
-    //   - client: instância do cliente
-    //   - &broker_addr: endereço do broker
-    //   - 1883: porta padrão MQTT
-    //   - mqtt_connection_cb: callback de status
-    //   - NULL: argumento opcional para o callback
-    //   - &ci: informações de conexão
-    mqtt_client_connect(client, &broker_addr, 1883, mqtt_connection_cb, NULL, &ci);
+    err_t err = mqtt_client_connect(mqtt_client_instance, &broker_addr, 1883, mqtt_connection_cb, NULL, &ci);
+
+    if (err != ERR_OK) {
+        printf("mqtt_client_connect retornou erro: %d\n", err);
+        return NULL;
+    }
+    
+    return mqtt_client_instance;
 }
 
-/* Callback de confirmação de publicação
- * Chamado quando o broker confirma recebimento da mensagem (para QoS > 0)
- * Parâmetros:
- *   - arg: argumento opcional
- *   - result: código de resultado da operação */
+// Callback de confirmação de publicação
 static void mqtt_pub_request_cb(void *arg, err_t result) {
     if (result == ERR_OK) {
-        printf("Publicação MQTT enviada com sucesso!\n");
+        // printf("Publicação MQTT enviada com sucesso!\n"); // Comentado para não poluir o log
     } else {
         printf("Erro ao publicar via MQTT: %d\n", result);
     }
 }
 
-/* Função para publicar dados em um tópico MQTT
- * Parâmetros:
- *   - topic: nome do tópico (ex: "sensor/temperatura")
- *   - data: payload da mensagem (bytes)
- *   - len: tamanho do payload */
+// Função para publicar dados em um tópico MQTT
 void mqtt_comm_publish(const char *topic, const uint8_t *data, size_t len) {
-    // Envia a mensagem MQTT
+    if (mqtt_client_instance == NULL || !mqtt_client_is_connected(mqtt_client_instance)) {
+        printf("Não é possível publicar: cliente MQTT não está conectado.\n");
+        return;
+    }
+
     err_t status = mqtt_publish(
-        client,              // Instância do cliente
-        topic,               // Tópico de publicação
-        data,                // Dados a serem enviados
-        len,                 // Tamanho dos dados
-        0,                   // QoS 0 (nenhuma confirmação)
-        0,                   // Não reter mensagem
-        mqtt_pub_request_cb, // Callback de confirmação
-        NULL                 // Argumento para o callback
+        mqtt_client_instance,
+        topic,
+        data,
+        len,
+        0, // QoS 0
+        0, // Não reter
+        mqtt_pub_request_cb,
+        NULL
     );
 
     if (status != ERR_OK) {
-        printf("mqtt_publish falhou ao ser enviada: %d\n", status);
+        printf("mqtt_publish falhou com o erro: %d\n", status);
     }
 }

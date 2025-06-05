@@ -1,53 +1,61 @@
 // Bibliotecas necessárias
-#include <string.h>                 // Para funções de string como strlen()
-#include "pico/stdlib.h"            // Biblioteca padrão do Pico (GPIO, tempo, etc.)
-#include "pico/cyw43_arch.h"        // Driver WiFi para Pico W
-#include "include/wifi_conn.h"      // Funções personalizadas de conexão WiFi
-#include "include/mqtt_comm.h"      // Funções personalizadas para MQTT
-#include "include/xor_cipher.h"     // Funções de cifra XOR
+#include <stdio.h>                // Para a função sprintf()
+#include <string.h>               // Para funções de string como strlen()
+#include "pico/stdlib.h"          // Biblioteca padrão do Pico (GPIO, tempo, etc.)
+#include "pico/cyw43_arch.h"      // Driver WiFi para Pico W
+#include "pico/util/datetime.h"   // Para obter o tempo (timestamp)
+
+#include "include/wifi_conn.h"    // Funções personalizadas de conexão WiFi
+#include "include/mqtt_comm.h"    // Funções personalizadas para MQTT
+#include "include/xor_cipher.h"   // Funções de cifra XOR
+
+// --- Configurações da Aplicação ---
+#define WIFI_SSID       "Eu" 
+#define WIFI_PASSWORD   "12345678"  
+#define BROKER_IP "192.168.38.29"       
+#define MQTT_USER       "aluno"
+#define MQTT_PASS       "senha123"
+#define MQTT_CLIENT_ID  "bitdog-publisher"
+#define MQTT_TOPIC      "escola/sala1/temperatura"
+
+// Chave para a cifra XOR (deve ser a mesma no publisher e no subscriber)
+#define XOR_KEY 42
 
 int main() {
     // Inicializa todas as interfaces de I/O padrão (USB serial, etc.)
     stdio_init_all();
     
     // Conecta à rede WiFi
-    // Parâmetros: Nome da rede (SSID) e senha
-    connect_to_wifi("SSID da rede", "Senha da rede");
+    connect_to_wifi(WIFI_SSID, WIFI_PASSWORD);
 
-    // Configura o cliente MQTT
-    // Parâmetros: ID do cliente, IP do broker, usuário, senha
-    mqtt_setup("bitdog1", "IP do broker", "aluno", "senha123");
+    // Configura o cliente MQTT usando a nova função.
+    // O Publisher não precisa de um callback especial na conexão, então passamos NULL.
+    mqtt_setup_and_get_client(MQTT_CLIENT_ID, BROKER_IP, MQTT_USER, MQTT_PASS, NULL);
 
-    // Mensagem original a ser enviada
-    const char *mensagem = "26.5";
-    // Buffer para mensagem criptografada (16 bytes)
-    uint8_t criptografada[16];
-    // Criptografa a mensagem usando XOR com chave 42
-    xor_encrypt((uint8_t *)mensagem, criptografada, strlen(mensagem), 42);
+    // Buffer para construir a mensagem JSON
+    char payload[128];
+    // Buffer para a mensagem criptografada
+    uint8_t encrypted_payload[128];
 
     // Loop principal do programa
     while (true) {
-        // Publica a mensagem original (não criptografada)
-        mqtt_comm_publish("escola/sala1/temperatura", mensagem, strlen(mensagem));
+        // 1. Obter o timestamp atual (segundos desde a inicialização do Pico)
+        uint64_t current_timestamp = to_us_since_boot(get_absolute_time()) / 1000000;
+
+        // 2. Criar o payload no formato JSON com valor e timestamp
+        sprintf(payload, "{\"valor\":26.5,\"ts\":%llu}", current_timestamp);
         
-        // Alternativa: Publica a mensagem criptografada (atualmente comentada)
-        // mqtt_comm_publish("escola/sala1/temperatura", criptografada, strlen(mensagem));
+        printf("Publicando (texto claro): %s\n", payload);
+
+        // 3. (Etapa 5) Criptografar a mensagem JSON usando a cifra XOR
+        size_t payload_len = strlen(payload);
+        xor_encrypt((uint8_t *)payload, encrypted_payload, payload_len, XOR_KEY);
+
+        // 4. (Etapa 6) Publicar a mensagem CRIPTOGRAFADA
+        mqtt_comm_publish(MQTT_TOPIC, encrypted_payload, payload_len);
         
         // Aguarda 5 segundos antes da próxima publicação
         sleep_ms(5000);
     }
     return 0;
 }
-
-/* 
- * Comandos de terminal para testar o MQTT:
- * 
- * Inicia o broker MQTT com logs detalhados:
- * mosquitto -c mosquitto.conf -v
- * 
- * Assina o tópico de temperatura (recebe mensagens):
- * mosquitto_sub -h localhost -p 1883 -t "escola/sala1/temperatura" -u "aluno" -P "senha123"
- * 
- * Publica mensagem de teste no tópico de temperatura:
- * mosquitto_pub -h localhost -p 1883 -t "escola/sala1/temperatura" -u "aluno" -P "senha123" -m "26.6"
- */
